@@ -46,14 +46,9 @@ async function run() {
 
     console.log(`Tìm thấy ${newItems.length} bài mới chưa gửi.`);
 
-    let sentCount = 0;
-    const MAX_POSTS_PER_RUN = 8; // Giới hạn tối đa 8 bài mỗi lần chạy để không bị nghẽn
 
     for (const item of newItems) {
-      if (sentCount >= MAX_POSTS_PER_RUN) {
-        console.log('Đã đạt giới hạn số bài gửi trong 1 lượt chạy (8 bài). Các bài còn lại sẽ gửi ở lượt sau.');
-        break;
-      }
+
 
       const fullContent = item['content:encoded'] || item.content || item.description || '';
       const title = (item.title || '').trim();
