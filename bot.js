@@ -40,26 +40,23 @@ async function run() {
   }
 
   try {
+    console.log('Đang tải danh sách bài viết từ Cfx Forum...');
     const feed = await parser.parseURL(FEED_URL);
-    // Lấy danh sách bài chưa từng gửi lên Discord
     const newItems = feed.items.filter(item => !seen.includes(item.link)).reverse();
+
+    console.log(`Tìm thấy ${newItems.length} bài chưa có trong lịch sử.`);
 
     for (const item of newItems) {
       const fullContent = item['content:encoded'] || item.content || item.description || '';
       const title = (item.title || '').trim();
       const titleLower = title.toLowerCase();
-      
-      // Lấy toàn bộ tag của bài viết (chuyển về chữ thường)
       const categories = (item.categories || []).map(cat => cat.toLowerCase());
 
-      // 1. Kiểm tra Free: Tiêu đề chứa [free], (free), hoặc có tag "free"
-      // (Bất kể bài có gắn kèm tag esx, qbcore hay gì khác đều nhận)
       const hasFreeIndicator = 
         titleLower.includes('[free]') || 
         titleLower.includes('(free)') || 
         categories.includes('free');
 
-      // 2. Kiểm tra Paid: Tiêu đề chứa [paid], (paid), hoặc có tag "paid"
       const hasPaidIndicator = 
         titleLower.includes('[paid]') || 
         titleLower.includes('(paid)') || 
@@ -72,14 +69,12 @@ async function run() {
       if (hasFreeIndicator && !hasPaidIndicator) {
         targetWebhook = process.env.DISCORD_WEBHOOK_FREE;
         categoryName = 'Free Script';
-        embedColor = 0x00ff7f; // Xanh lá
+        embedColor = 0x00ff7f;
       } else if (hasPaidIndicator) {
         targetWebhook = process.env.DISCORD_WEBHOOK_PAID;
         categoryName = 'Paid Script';
-        embedColor = 0xffa500; // Cam
+        embedColor = 0xffa500;
       } else {
-        // Nếu bài viết chưa có nhãn free hay paid thì bỏ qua ở lượt này,
-        // KHÔNG lưu vào seen để lần sau dev bổ sung tag thì vẫn quét được
         continue;
       }
 
@@ -112,33 +107,37 @@ async function run() {
       };
 
       try {
+        console.log(`Đang gửi: [${categoryName}] ${title}`);
+
         const res = await fetch(targetWebhook, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(10000)
+          signal: AbortSignal.timeout(8000)
         });
 
         if (res.ok) {
-          console.log(`Đã gửi: [${categoryName}] ${title}`);
+          console.log(`=> Thành công: ${title}`);
           seen.push(item.link);
-          await new Promise(r => setTimeout(r, 3500)); // Nghỉ 3.5s chống rate limit
+          await new Promise(r => setTimeout(r, 4000));
         } else if (res.status === 429) {
-          const retryAfter = Number(res.headers.get('retry-after')) || 5;
-          await new Promise(r => setTimeout(r, (retryAfter + 1) * 1000));
+          const retryHeader = res.headers.get('retry-after');
+          const waitSeconds = retryHeader ? parseFloat(retryHeader) : 5;
+          console.warn(`Discord báo Rate Limit 429. Đang chờ ${waitSeconds}s...`);
+          await new Promise(r => setTimeout(r, (waitSeconds + 1) * 1000));
         } else {
-          console.error(`Gửi lỗi ${res.status}: ${title}`);
+          console.error(`Gửi không thành công (Status: ${res.status}): ${title}`);
         }
       } catch (err) {
-        console.error(`Lỗi request: ${err.message}`);
+        console.error(`Bỏ qua bài do timeout hoặc mạng nghẽn: ${err.message}`);
       }
     }
   } catch (err) {
-    console.error('Lỗi đọc feed:', err.message);
+    console.error('Lỗi khi đọc dữ liệu RSS:', err.message);
   }
 
-  // Giữ lại 300 link gần nhất
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(seen.slice(-300), null, 2));
+  console.log('Đã cập nhật file history.json thành công.');
 }
 
 run().catch(console.error);
