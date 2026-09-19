@@ -6,15 +6,19 @@ const parser = new Parser({
     item: ['content:encoded', 'content', 'description', 'categories']
   }
 });
-const HISTORY_FILE = 'history.json';
-const FEED_URL = 'https://forum.cfx.re/c/development/releases/7.rss'; // Luồng gốc toàn bộ bài mới nhất
 
+const HISTORY_FILE = 'history.json';
+const FEED_URL = 'https://forum.cfx.re/c/development/releases/7.rss';
+
+// Bóc tách ảnh thumbnail hoặc ảnh bài đăng
 function extractMedia(html) {
   if (!html) return { image: null };
 
+  // 1. Tìm video YouTube để lấy thumbnail nét cao
   const ytMatch = html.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
   const ytThumb = ytMatch ? `https://img.youtube.com/vi/${ytMatch[1]}/hqdefault.jpg` : null;
 
+  // 2. Tìm thẻ ảnh đăng tải trên forum (bỏ qua emoji và avatar)
   const imgMatch = html.match(/<img[^>]+src="([^">]+)"/i);
   let imageUrl = null;
   if (imgMatch && imgMatch[1]) {
@@ -39,40 +43,72 @@ async function run() {
 
   try {
     const feed = await parser.parseURL(FEED_URL);
+    // Lấy bài mới chưa gửi, đảo ngược để gửi theo thứ tự thời gian cũ -> mới
     const newItems = feed.items.filter(item => !seen.includes(item.link)).reverse();
 
     for (const item of newItems) {
       const fullContent = item['content:encoded'] || item.content || item.description || '';
-      const titleLower = item.title.toLowerCase();
+      const titleLower = (item.title || '').toLowerCase();
       const contentLower = fullContent.toLowerCase();
 
-      // Kiểm tra xem bài có phải là bài trả phí (Paid) hay không
-      const isPaid = 
-        titleLower.includes('[paid]') ||
-        titleLower.includes('tebex') ||
-        contentLower.includes('tebex.io') ||
-        (item.categories && item.categories.some(cat => cat.toLowerCase().includes('paid')));
+      // Dấu hiệu nhận biết bài mất phí
+      const hasPaidTag = item.categories && item.categories.some(cat => cat.toLowerCase().includes('paid'));
+      const hasPaidTitle = titleLower.includes('[paid]') || titleLower.includes('(paid)');
+      const hasPriceNumber = /\b([1-9][0-9]*(\.[0-9]{1,2})?)\s*(eur|usd|gbp|€|\$)/i.test(contentLower);
 
-      // Lựa chọn Webhook theo phân loại
-      const targetWebhook = isPaid 
-        ? process.env.DISCORD_WEBHOOK_PAID 
-        : process.env.DISCORD_WEBHOOK_FREE;
+      // Dấu hiệu bài Free (kể cả trên Tebex 0đ hoặc GitHub)
+      const hasFreeTag = item.categories && item.categories.some(cat => cat.toLowerCase().includes('free'));
+      const hasFreeTitle = titleLower.includes('[free]') || titleLower.includes('(free)');
+      const hasZeroPrice = 
+        contentLower.includes('0.00') || 
+        contentLower.includes('0€') || 
+        contentLower.includes('0$') || 
+        contentLower.includes('free on tebex') ||
+        contentLower.includes('tebex (free)') ||
+        contentLower.includes('free tebex');
+      const hasOpenSource = 
+        contentLower.includes('github.com') || 
+        contentLower.includes('gitlab.com') || 
+        contentLower.includes('drive.google.com');
 
-      const categoryName = isPaid ? 'Paid Script' : 'Free Script';
-      const embedColor = isPaid ? 0xffa500 : 0x00ff7f; // Cam cho Paid, Xanh lá cho Free
+      // Logic phân loại:
+      // Ưu tiên: Nếu có tag/tiêu đề [Paid] hoặc có mức giá > 0 rõ ràng -> Chuyển sang Paid.
+      // Ngược lại nếu có tag/tiêu đề [Free], link GitHub, hoặc gói Tebex 0.00 -> Chuyển sang Free.
+      let isActuallyFree = false;
+
+      if (hasPaidTag || hasPaidTitle || (hasPriceNumber && !hasZeroPrice)) {
+        isActuallyFree = false;
+      } else if (hasFreeTag || hasFreeTitle || hasZeroPrice || hasOpenSource) {
+        isActuallyFree = true;
+      } else {
+        // Trường hợp không ghi rõ: nếu dính chữ tebex/purchase thì xếp vào Paid, còn lại cho vào Free
+        const isShopLink = contentLower.includes('tebex.io') || contentLower.includes('purchase') || contentLower.includes('buy now');
+        isActuallyFree = !isShopLink;
+      }
+
+      const targetWebhook = isActuallyFree 
+        ? process.env.DISCORD_WEBHOOK_FREE 
+        : process.env.DISCORD_WEBHOOK_PAID;
+
+      const categoryName = isActuallyFree ? 'Free Script' : 'Paid Script';
+      const embedColor = isActuallyFree ? 0x00ff7f : 0xffa500; // Xanh lá cho Free, Cam cho Paid
 
       if (!targetWebhook) continue;
 
       const media = extractMedia(fullContent);
+
+      // Cắt gọn mô tả nội dung (giới hạn 2000 ký tự chuẩn Discord)
       let cleanSnippet = (item.contentSnippet || '').replace(/\n\s*\n/g, '\n').trim();
-      if (cleanSnippet.length > 2000) cleanSnippet = cleanSnippet.slice(0, 2000) + '...';
+      if (cleanSnippet.length > 2000) {
+        cleanSnippet = cleanSnippet.slice(0, 2000) + '...';
+      }
 
       const payload = {
         thread_name: item.title.slice(0, 100),
         embeds: [{
           title: item.title,
           url: item.link,
-          description: cleanSnippet.length > 0 ? cleanSnippet : 'Bấm vào tiêu đề phía trên để xem bài viết gốc trên diễn đàn.',
+          description: cleanSnippet.length > 0 ? cleanSnippet : 'Bấm vào tiêu đề phía trên để xem chi tiết bài viết trên Cfx Forum.',
           color: embedColor,
           author: { 
             name: `${item.creator || 'Cfx Dev'} • [${categoryName}]`,
@@ -95,14 +131,15 @@ async function run() {
 
       if (res.ok) {
         seen.push(item.link);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 2000)); // Khoảng cách 2 giây giữa mỗi bài để tránh Discord rate limit
       }
     }
   } catch (err) {
-    console.error('Lỗi khi cào dữ liệu diễn đàn:', err.message);
+    console.error('Lỗi khi fetch và xử lý feed:', err.message);
   }
 
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(seen.slice(-150), null, 2));
+  // Giữ lại 200 bài đã gửi gần nhất trong history
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify(seen.slice(-200), null, 2));
 }
 
 run().catch(console.error);
