@@ -13,11 +13,9 @@ const FEED_URL = 'https://forum.cfx.re/c/development/releases/7.rss';
 function extractMedia(html) {
   if (!html) return { image: null };
 
-  // Bắt video YouTube để lấy thumbnail chất lượng cao
   const ytMatch = html.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
   const ytThumb = ytMatch ? `https://img.youtube.com/vi/${ytMatch[1]}/hqdefault.jpg` : null;
 
-  // Bắt ảnh đính kèm trong bài viết (bỏ qua emoji, avatar)
   const imgMatch = html.match(/<img[^>]+src="([^">]+)"/i);
   let imageUrl = null;
   if (imgMatch && imgMatch[1]) {
@@ -35,27 +33,34 @@ async function run() {
   if (fs.existsSync(HISTORY_FILE)) {
     try {
       seen = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+      if (!Array.isArray(seen)) seen = [];
     } catch {
       seen = [];
     }
   }
 
   try {
+    console.log('Bắt đầu tải RSS...');
     const feed = await parser.parseURL(FEED_URL);
     const newItems = feed.items.filter(item => !seen.includes(item.link)).reverse();
 
+    console.log(`Tìm thấy ${newItems.length} bài mới chưa gửi.`);
+
+    let sentCount = 0;
+    const MAX_POSTS_PER_RUN = 8; // Giới hạn tối đa 8 bài mỗi lần chạy để không bị nghẽn
+
     for (const item of newItems) {
+      if (sentCount >= MAX_POSTS_PER_RUN) {
+        console.log('Đã đạt giới hạn số bài gửi trong 1 lượt chạy (8 bài). Các bài còn lại sẽ gửi ở lượt sau.');
+        break;
+      }
+
       const fullContent = item['content:encoded'] || item.content || item.description || '';
       const title = (item.title || '').trim();
       const titleLower = title.toLowerCase();
-
-      // Lấy danh sách tag của bài viết
       const categories = (item.categories || []).map(cat => cat.toLowerCase());
 
-      // 1. Kiểm tra điều kiện FREE: Có [free] ở đầu tiêu đề HOẶC có tag free
       const isFree = titleLower.startsWith('[free]') || categories.includes('free');
-
-      // 2. Kiểm tra điều kiện PAID: Có [paid] ở đầu tiêu đề HOẶC có tag paid
       const isPaid = titleLower.startsWith('[paid]') || categories.includes('paid');
 
       let targetWebhook = null;
@@ -65,32 +70,28 @@ async function run() {
       if (isFree) {
         targetWebhook = process.env.DISCORD_WEBHOOK_FREE;
         categoryName = 'Free Script';
-        embedColor = 0x00ff7f; // Xanh lá
+        embedColor = 0x00ff7f;
       } else if (isPaid) {
         targetWebhook = process.env.DISCORD_WEBHOOK_PAID;
         categoryName = 'Paid Script';
-        embedColor = 0xffa500; // Cam
+        embedColor = 0xffa500;
       } else {
-        // Nếu bài viết không gắn [FREE] hay [PAID] thì bỏ qua, không đăng bài rác
+        seen.push(item.link); // Đánh dấu đã duyệt bài không hợp lệ
         continue;
       }
 
       if (!targetWebhook) continue;
 
       const media = extractMedia(fullContent);
-
-      // Cắt gọn mô tả tối đa 2000 ký tự
       let cleanSnippet = (item.contentSnippet || '').replace(/\n\s*\n/g, '\n').trim();
-      if (cleanSnippet.length > 2000) {
-        cleanSnippet = cleanSnippet.slice(0, 2000) + '...';
-      }
+      if (cleanSnippet.length > 2000) cleanSnippet = cleanSnippet.slice(0, 2000) + '...';
 
       const payload = {
         thread_name: title.slice(0, 100),
         embeds: [{
           title: title,
           url: item.link,
-          description: cleanSnippet.length > 0 ? cleanSnippet : 'Bấm vào tiêu đề phía trên để xem chi tiết bài viết trên Cfx Forum.',
+          description: cleanSnippet.length > 0 ? cleanSnippet : 'Bấm vào tiêu đề phía trên để xem chi tiết.',
           color: embedColor,
           author: { 
             name: `${item.creator || 'Cfx Dev'} • [${categoryName}]`,
@@ -105,22 +106,41 @@ async function run() {
         }]
       };
 
-      const res = await fetch(targetWebhook, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      try {
+        console.log(`Đang gửi: ${title}...`);
+        
+        // Thêm Timeout 10s: Quá 10s không phản hồi thì tự hủy request tránh treo script
+        const res = await fetch(targetWebhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(10000)
+        });
 
-      if (res.ok) {
-        seen.push(item.link);
-        await new Promise(r => setTimeout(r, 2000));
+        if (res.ok) {
+          console.log(`=> Gửi thành công: [${categoryName}] ${title}`);
+          seen.push(item.link);
+          sentCount++;
+          // Giãn cách 3.5 giây giữa mỗi bài
+          await new Promise(r => setTimeout(r, 3500));
+        } else if (res.status === 429) {
+          const retryAfter = Number(res.headers.get('retry-after')) || 5;
+          console.warn(`Discord báo Rate Limit, tạm dừng ${retryAfter} giây...`);
+          await new Promise(r => setTimeout(r, (retryAfter + 1) * 1000));
+        } else {
+          console.error(`Lỗi gửi bài: Mã phản hồi ${res.status}`);
+          seen.push(item.link);
+        }
+      } catch (postErr) {
+        console.error(`Request gửi bài bị lỗi hoặc timeout: ${postErr.message}`);
       }
     }
   } catch (err) {
-    console.error('Lỗi khi fetch và xử lý feed:', err.message);
+    console.error('Lỗi khi tải hoặc xử lý feed RSS:', err.message);
   }
 
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(seen.slice(-200), null, 2));
+  console.log('Đã lưu lịch sử vào history.json và hoàn tất lần quét.');
 }
 
 run().catch(console.error);
