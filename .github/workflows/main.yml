@@ -1,0 +1,37 @@
+name: Check Cfx Forum RSS
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Fetch and Post to Discord
+        env:
+          DISCORD_WEBHOOK_FREE: ${{ secrets.DISCORD_WEBHOOK_FREE }}
+          DISCORD_WEBHOOK_PAID: ${{ secrets.DISCORD_WEBHOOK_PAID }}
+        run: node bot.js
+
+      - name: Commit history
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add history.json
+          git commit -m "Update post history" || exit 0
+          git push
