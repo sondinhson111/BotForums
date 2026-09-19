@@ -52,30 +52,27 @@ async function run() {
       const titleLower = title.toLowerCase();
       const categories = (item.categories || []).map(cat => cat.toLowerCase());
 
-      const hasFreeIndicator = 
+      // Nhận diện bài miễn phí
+      const isFree = 
         titleLower.includes('[free]') || 
         titleLower.includes('(free)') || 
-        categories.includes('free');
-
-      const hasPaidIndicator = 
-        titleLower.includes('[paid]') || 
-        titleLower.includes('(paid)') || 
-        categories.includes('paid');
+        categories.includes('free') ||
+        titleLower.includes('open-source') ||
+        titleLower.includes('opensource');
 
       let targetWebhook = null;
       let categoryName = '';
       let embedColor = 0x00ff7f;
 
-      if (hasFreeIndicator && !hasPaidIndicator) {
+      if (isFree) {
         targetWebhook = process.env.DISCORD_WEBHOOK_FREE;
         categoryName = 'Free Script';
-        embedColor = 0x00ff7f;
-      } else if (hasPaidIndicator) {
+        embedColor = 0x00ff7f; // Xanh lá
+      } else {
+        // Toàn bộ các bài còn lại (có tag Paid hoặc không gắn tag) đều đưa vào Paid
         targetWebhook = process.env.DISCORD_WEBHOOK_PAID;
         categoryName = 'Paid Script';
-        embedColor = 0xffa500;
-      } else {
-        continue;
+        embedColor = 0xffa500; // Cam
       }
 
       if (!targetWebhook) continue;
@@ -136,9 +133,9 @@ async function run() {
     console.error('Lỗi khi đọc dữ liệu RSS:', err.message);
   }
 
-fs.writeFileSync(HISTORY_FILE, JSON.stringify(seen.slice(-300), null, 2));
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify(seen.slice(-300), null, 2));
   console.log('Đã cập nhật file history.json thành công.');
-  process.exit(0); // Ép Node.js thoát ngay để GitHub Actions chuyển sang bước Commit
+  process.exit(0);
 }
 
 run().catch(err => {
