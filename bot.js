@@ -136,8 +136,12 @@ async function run() {
     console.error('Lỗi khi đọc dữ liệu RSS:', err.message);
   }
 
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(seen.slice(-300), null, 2));
+fs.writeFileSync(HISTORY_FILE, JSON.stringify(seen.slice(-300), null, 2));
   console.log('Đã cập nhật file history.json thành công.');
+  process.exit(0); // Ép Node.js thoát ngay để GitHub Actions chuyển sang bước Commit
 }
 
-run().catch(console.error);
+run().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
