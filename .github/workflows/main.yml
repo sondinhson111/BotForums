@@ -17,10 +17,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
 
       - name: Install dependencies
-        run: npm install rss-parser
+        run: npm install
 
       - name: Fetch and Post to Discord
         env:
@@ -29,11 +29,9 @@ jobs:
         run: node bot.js
 
       - name: Commit history
-        if: always()
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add history.json
-          git commit -m "Update post history [skip ci]" || exit 0
-          git pull origin main --rebase
-          git push origin main
+          git commit -m "Update post history" || exit 0
+          git push
